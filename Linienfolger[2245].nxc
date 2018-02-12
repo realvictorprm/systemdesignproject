@@ -1,0 +1,337 @@
+#define SENSOR1 SENSOR_1
+#define SENSOR2 SENSOR_2 + 1
+#define SENSOR3 SENSOR_3 + 4
+// #define SENSOR1 SENSOR_1 + 3
+inline float lightValueToMotorValue(int lightValue, int bottom, int top) {
+    return (lightValue - bottom) * (100.0 / (top - bottom));
+}
+
+inline float g(float x){
+      if (x >= 65)
+        return -(2*x * x)/35+(30*x)/7+440/7;
+       // return -(7*x*x)/60+(85*x)/6-330;
+      else return 100;
+      // return (8*x * x)/75-(316*x)/15+980;
+      // return (x*x)/(25)-9*x+450; // Bei 50 % halten
+      //return -(17.0 / 6.0) * x + 640/3;
+}
+
+inline float f(float x){
+      if (x <= 35)
+       return -(2*x*x)/35+(50*x)/7-80;
+       // return  (-(7*x * x))/(60)+ (55*x)/(6)-80;
+      else return 100;
+      // return (8 * x * x)/(75)- (4*x)/(15)-60;
+      // return (x*x)/25+x-50; // Bei 50 % halten
+      //return (17.0 / 6.0) * x - 70.0;
+}
+
+inline float motorOutputMapping(float x){
+      return (-3./100.) * x * x + (9. / 2.) * x - 50.;
+}
+
+inline void Out(byte flag, float power){
+     if (power < 0){
+        OnRev(flag, -power);
+     }else{
+        OnFwd(flag, power);
+     }
+}
+
+inline float min(float a, float b){
+      if (a < b) return a;
+      if (b < a) return b;
+}
+
+inline float max(float a, float b){
+      if (a < b) return b;
+      if (a > b) return a;
+}
+
+inline float limitBetween(float top, float bottom, float value){
+      if (value < bottom)
+         return bottom;
+      else if (value > top)
+         return top;
+      else
+          return value;
+}
+
+inline bool between(float a, float b, float t){
+     return a > b && a < t;
+}
+
+inline float middleSensorNTimes(byte flag, int n){
+  float value = 0;
+  for (int i = 0; i < n; i++){
+      value += Sensor(flag);
+  }
+  return value / n;
+}
+
+bool end = false;
+bool left = false;
+bool middle = true;
+bool right = false;
+bool bleft = false;
+bool bmiddle = true;
+bool bright = false;
+
+float half = 0.;
+int white = 0;
+int black = 0;
+int count = 0;
+bool swapped = false;
+
+mutex motorMutex;
+
+inline bool isLineEnd(){
+   return ((!bmiddle && bright && bleft) || (bmiddle && !bright && !bleft))
+        && ((right && middle && left)) //|| (!right && !left && !middle))
+        || ((!bmiddle && !bright && !bleft) && (right && middle && left));
+}
+
+inline void showPositionProperties(){
+   //ClearScreen();
+   // TextOut(0, 0, "left=       ");
+   TextOut(0, 0, "left=" + NumToStr(left));
+   // TextOut(0, 9, "middle=      " );
+   TextOut(0, 9, "middle=" + NumToStr(middle));
+   // TextOut(0, 18, "right=      ");
+   TextOut(0, 18, "right=" + NumToStr(right));
+   // TextOut(0, 27, "left before=       ");
+   TextOut(0, 27, "left before=" + NumToStr(bleft));
+   // TextOut(0, 36, "middle before=      ");
+   TextOut(0, 36, "middle before=" + NumToStr(bmiddle));
+   // TextOut(0, 45, "right before=       ");
+   TextOut(0, 45, "right before=" + NumToStr(bright));
+}
+task followLine(){
+     int middleTimes = 10;
+     Acquire(motorMutex);
+     while(count < 3 && !end){
+      int value = 0;
+      for(int i = 0; i < middleTimes; i++){
+        value += SENSOR1;
+      }
+      value /= middleTimes;
+      value = limitBetween(white, black, value);
+      float x = lightValueToMotorValue(value, black, white);
+      float a = f(x);
+      float b = g(x);
+      /*
+      a = motorOutputMapping(a);
+      b = motorOutputMapping(b);
+      */
+      b = limitBetween(100., -100., b);
+      a = limitBetween(100., -100., a);
+      if (swapped) {
+         float buffer = a;
+         a = b;
+         b = buffer;
+      }
+
+      Out(OUT_C, a);
+      Out(OUT_B, b);
+      /*
+      if(SensorUS(IN_4) < 7) {
+        OnFwd(OUT_BC, 100);
+        Wait(100);
+        Off(OUT_BC);
+        RotateMotor(OUT_A, 50., 360.0 * 3.2);
+        Wait(400);
+        Off(OUT_A);
+        Wait(1000);
+        RotateMotor(OUT_A, -50., 360.0 * 3.2);
+        Wait(400);
+        PlayFile("WALLE 1.rso");
+        Wait(3000);
+        break;
+      }  */
+    }
+    Release(motorMutex);
+}
+
+task checkForLineEnd(){
+     float rightValue = 0.;
+     float leftValue = 0.;
+     float middleValue = 0.0;
+     int middleTimes = 1;
+     float compareValue = (half * 1.15);
+     while(true){
+       bright = right;
+       bleft = left;
+       bmiddle = middle;
+       rightValue = 0;
+       leftValue = 0;
+       middleValue = 0;
+
+        rightValue += SENSOR1;
+        leftValue += SENSOR2;
+        middleValue += SENSOR3;
+       rightValue /= middleTimes;
+       leftValue /= middleTimes;
+       middleValue /= middleTimes;
+       right = rightValue > compareValue;
+       left = leftValue > compareValue;
+       middle = middleValue > compareValue;
+       if(isLineEnd()){
+         //if(between(leftValue, rightValue * 0.8, rightValue * 1.2)){
+           end = true;
+           Acquire(motorMutex);
+           Off(OUT_BC);
+           Release(motorMutex);
+           PlayTone(500, 500);
+
+           Out(OUT_B, 100);
+           Out(OUT_C, -100);
+           Wait(650);
+           Off(OUT_BC);
+           break;
+         //}
+       }
+       //showPositionProperties();
+     }
+     OnFwd(OUT_BC, 100);
+     Wait(750);
+     Off(OUT_BC);
+     end = false;
+     StartTask(followLine);
+}
+
+task detectWall(){
+     int value = 255;
+     int maxWait = 18;
+     while(true){
+        for(int i = 0; i<maxWait; i++){
+                value += SensorUS(IN_4);
+                Wait(5);
+        }
+        value /= maxWait;
+        value -= 2;
+        if(value < 20 && !end){
+          Off(OUT_BC);
+          end = true;
+          Acquire(motorMutex);
+          Off(OUT_BC);
+          Release(motorMutex);
+          PlayTone(2000, 1000);
+          Wait(1000);
+        }else if (end && value > 20){
+          break;
+        }
+        TextOut(0, 55, "Distance:      ");
+        TextOut(0, 55, "Distance: " + NumToStr(value));
+        value = 0;
+     }
+     Wait(1000);
+     Acquire(motorMutex);
+     Out(OUT_BC, 100);
+     Wait(500);
+     Off(OUT_BC);
+     Release(motorMutex);
+     end = false;
+     StartTask(followLine);
+     StartTask(checkForLineEnd);
+     value = 255;
+     bool pushingBlock = false;
+     while(true){
+        for(int i = 0; i<maxWait; i++){
+                value += SensorUS(IN_4);
+                Wait(5);
+        }
+        value /= maxWait;
+        value -= 2;
+        TextOut(0, 55, "Distance:      ");
+        TextOut(0, 55, "Distance: " + NumToStr(value));
+        if(value < 16 && !pushingBlock){
+          PlayTone(1500, 1000);
+          pushingBlock = true;
+        }else if(pushingBlock && value < 10){
+          end = true;
+          Out(OUT_BC, 100.);
+        }else if(pushingBlock && value >= 10){
+          Acquire(motorMutex);
+          Off(OUT_BC);
+          ResetRotationCount(OUT_B);
+          Wait(1);
+          OnFwd(OUT_B, 100.);
+          OnRev(OUT_C, 100.);
+          while(MotorRotationCount(OUT_B) < 990){
+            Wait(1);
+          }
+          ResetRotationCount(OUT_B);
+          Release(motorMutex);
+          break;
+        }
+        value = 0;
+     }
+     end = false;
+     StartTask(followLine);
+     StartTask(checkForLineEnd);
+     value = 255;
+     while(true){
+        for(int i = 0; i<maxWait; i++){
+                value += SensorUS(IN_4);
+                Wait(5);
+        }
+        value /= maxWait;
+        value -= 2;
+        TextOut(0, 55, "Distance:      ");
+        TextOut(0, 55, "Distance: " + NumToStr(value));
+        if(value < 21){
+          end = true;
+          PlayTone(2000, 1000);
+          Acquire(motorMutex);
+          Off(OUT_BC);
+          OnFwd(OUT_BC, 100);
+          Wait(1000);
+          Off(OUT_BC);
+          RotateMotor(OUT_A, 50., 360.0 * 3.2);
+          Wait(400);
+          Off(OUT_A);
+          Wait(1000);
+          RotateMotor(OUT_A, -50., 360.0 * 2.8);
+          Wait(400);
+          PlayFile("WALLE 1.rso");
+          Wait(3000);
+          Release(motorMutex);
+          break;
+        }
+        value = 0;
+     }
+     StopAllTasks();
+}
+
+task main(){
+     SetSensorLight(IN_3, true);
+     SetSensorLight(IN_2, true);
+     SetSensorLight(IN_1, true);
+     SetSensorUltrasonic(IN_4);
+     for(int i = 0; i < 500; i++){
+       white += SENSOR1;
+       black += SENSOR3;
+     }
+     white /= 500;
+     black /= 500;
+     swapped = false;
+     if (black > white){
+        int buffer = white;
+        white = black;
+        black = buffer;
+        swapped = !swapped;
+     }
+     white = white;
+     black = black;
+     count = 0;
+     half = (white + black) / 2.0;
+     OnFwd(OUT_B, 100.);
+     OnRev(OUT_C, 100.);
+     while(MotorRotationCount(OUT_B) < 990){
+       Wait(1);
+     }
+     ResetRotationCount(OUT_B);
+     Wait(1);
+     StartTask(detectWall);
+     StartTask(followLine);
+};
